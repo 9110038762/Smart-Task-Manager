@@ -25,7 +25,7 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
   // Fetch list of users for assignment (Managers & Admins only)
   useEffect(() => {
     const fetchUsers = async () => {
-      if (!isOpen || !isManagerOrAdmin) return;
+      if (!isOpen || !isManagerOrAdmin || !token) return;
       try {
         const res = await fetch(`${apiUrl}/admin/users`, {
           headers: {
@@ -42,7 +42,7 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
     };
 
     fetchUsers();
-  }, [isOpen, user, token]);
+  }, [isOpen, isManagerOrAdmin, token, apiUrl]);
 
   // Load task data if editing
   useEffect(() => {
@@ -59,6 +59,7 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
       
       // Fetch active reminder for this task if editing
       const fetchReminder = async () => {
+        if (!token) return;
         try {
           const res = await fetch(`${apiUrl}/reminders`, {
             headers: {
@@ -95,7 +96,7 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
       setReminderTime('');
     }
     setError('');
-  }, [task, isOpen]);
+  }, [task, isOpen, token, apiUrl]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -124,7 +125,7 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
           priority,
           dueDate: new Date(dueDate),
           category,
-          assignee: assigneeId || undefined
+          assignee: assigneeId || ''
         };
       }
 
@@ -149,24 +150,39 @@ const TaskModal = ({ isOpen, onClose, task, onSave }) => {
 
       const savedTask = data.data;
 
-      // Handle Smart Reminder Creation
+      // Handle Smart Reminder Creation or Cancellation
       if (reminderTime) {
-        const reminderRes = await fetch(`${apiUrl}/reminders`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({
-            taskId: savedTask._id,
-            reminderTime: new Date(reminderTime),
-            channel: 'System'
-          })
-        });
-        const reminderData = await reminderRes.json();
-        if (!reminderData.success) {
-          console.error('Reminder error:', reminderData.error);
-          // Don't fail the whole task save if just the reminder fails, but show alert
+        try {
+          const reminderRes = await fetch(`${apiUrl}/reminders`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              taskId: savedTask._id,
+              reminderTime: new Date(reminderTime).toISOString(),
+              channel: 'System'
+            })
+          });
+          const reminderData = await reminderRes.json();
+          if (!reminderData.success) {
+            console.warn('Reminder notice:', reminderData.error);
+          }
+        } catch (remErr) {
+          console.error('Error saving reminder:', remErr);
+        }
+      } else if (isEditing) {
+        // If reminder was cleared, cancel any pending reminder for this task
+        try {
+          await fetch(`${apiUrl}/reminders/task/${savedTask._id}`, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+        } catch (remErr) {
+          console.error('Error clearing reminder:', remErr);
         }
       }
 

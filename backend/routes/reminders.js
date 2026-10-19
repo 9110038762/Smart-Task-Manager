@@ -43,8 +43,8 @@ router.post('/', protect, async (req, res) => {
       }
     }
 
-    // Check if reminderTime is in the future
-    if (new Date(reminderTime) <= new Date()) {
+    // Check if reminderTime is in the future (5s grace period for clock skew)
+    if (new Date(reminderTime).getTime() <= Date.now() - 5000) {
       return res.status(400).json({ success: false, error: 'Reminder time must be in the future' });
     }
 
@@ -67,6 +67,18 @@ router.post('/', protect, async (req, res) => {
     res.status(201).json({ success: true, data: populatedReminder });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// @desc    Delete reminders for a task
+// @route   DELETE /api/reminders/task/:taskId
+// @access  Private
+router.delete('/task/:taskId', protect, async (req, res) => {
+  try {
+    await Reminder.deleteMany({ task: req.params.taskId, user: req.user.id });
+    res.status(200).json({ success: true, data: {} });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

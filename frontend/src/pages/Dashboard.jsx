@@ -1,14 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { 
-  LogOut, Plus, Search, Calendar, User, Tag, 
+  LogOut, Plus, Search, Calendar, 
   Trash2, Edit, AlertCircle, Users, CheckSquare, RefreshCw
 } from 'lucide-react';
 import TaskModal from '../components/TaskModal';
 import ReminderToast from '../components/ReminderToast';
 
 const Dashboard = () => {
-  const { user, token, logout, apiUrl } = useAuth();
+  const { user, token, logout, apiUrl, socket } = useAuth();
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -29,7 +29,8 @@ const Dashboard = () => {
   const isAdmin = user && user.role === 'Admin';
 
   // Fetch all tasks
-  const fetchTasks = async () => {
+  const fetchTasks = useCallback(async () => {
+    if (!token) return;
     setLoading(true);
     try {
       const res = await fetch(`${apiUrl}/tasks`, {
@@ -46,11 +47,11 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiUrl, token]);
 
   // Fetch admin user list
-  const fetchAdminUsers = async () => {
-    if (!isAdmin) return;
+  const fetchAdminUsers = useCallback(async () => {
+    if (!isAdmin || !token) return;
     setAdminLoading(true);
     setAdminError('');
     try {
@@ -66,21 +67,81 @@ const Dashboard = () => {
         setAdminError(data.error || 'Failed to load users');
       }
     } catch (err) {
+      console.error('Error loading users:', err);
       setAdminError('Network error loading users');
     } finally {
       setAdminLoading(false);
     }
-  };
+  }, [apiUrl, isAdmin, token]);
 
   useEffect(() => {
     fetchTasks();
-  }, [token]);
+  }, [fetchTasks]);
 
   useEffect(() => {
     if (activeTab === 'admin') {
       fetchAdminUsers();
     }
-  }, [activeTab]);
+  }, [activeTab, fetchAdminUsers]);
+
+  // Real-time Socket Event Listeners
+  useEffect(() => {
+    if (!socket || !user) return;
+
+    const handleTaskCreated = (newTask) => {
+      const hasManagerOrAdminRole = user.role === 'Manager' || user.role === 'Admin';
+      const isCreator = newTask.creator?._id === user.id || newTask.creator === user.id;
+      const isAssignee = newTask.assignee && (newTask.assignee._id === user.id || newTask.assignee === user.id);
+
+      if (hasManagerOrAdminRole || isCreator || isAssignee) {
+        setTasks(prev => {
+          if (prev.some(t => t._id === newTask._id)) return prev;
+          return [newTask, ...prev];
+        });
+      }
+    };
+
+    const handleTaskUpdated = (updatedTask) => {
+      const hasManagerOrAdminRole = user.role === 'Manager' || user.role === 'Admin';
+      const isCreator = updatedTask.creator?._id === user.id || updatedTask.creator === user.id;
+      const isAssignee = updatedTask.assignee && (updatedTask.assignee._id === user.id || updatedTask.assignee === user.id);
+      const canSee = hasManagerOrAdminRole || isCreator || isAssignee;
+
+      setTasks(prev => {
+        const exists = prev.some(t => t._id === updatedTask._id);
+        if (exists) {
+          if (canSee) {
+            return prev.map(t => t._id === updatedTask._id ? updatedTask : t);
+          } else {
+            return prev.filter(t => t._id !== updatedTask._id);
+          }
+        } else if (canSee) {
+          return [updatedTask, ...prev];
+        }
+        return prev;
+      });
+    };
+
+    const handleTaskDeleted = ({ taskId }) => {
+      setTasks(prev => prev.filter(t => t._id !== taskId));
+    };
+
+    const handleUserRoleUpdated = ({ userId, role }) => {
+      setAdminUsersList(prev => prev.map(u => u._id === userId ? { ...u, role } : u));
+    };
+
+    socket.on('task_created', handleTaskCreated);
+    socket.on('task_updated', handleTaskUpdated);
+    socket.on('task_deleted', handleTaskDeleted);
+    socket.on('user_role_updated', handleUserRoleUpdated);
+
+    return () => {
+      socket.off('task_created', handleTaskCreated);
+      socket.off('task_updated', handleTaskUpdated);
+      socket.off('task_deleted', handleTaskDeleted);
+      socket.off('user_role_updated', handleUserRoleUpdated);
+    };
+  }, [socket, user]);
 
   // Handle task deletion
   const handleDeleteTask = async (taskId) => {
@@ -141,10 +202,10 @@ const Dashboard = () => {
 
     // Check permissions
     const taskToMove = tasks.find(t => t._id === taskId);
-    if (!taskToMove) return;
+    if (!taskToMove || taskToMove.status === targetStatus) return;
 
-    const isCreator = taskToMove.creator._id === user.id || taskToMove.creator === user.id;
-    const isAssignee = taskToMove.assignee && (taskToMove.assignee._id === user.id || taskToMove.assignee === user.id);
+    const isCreator = taskToMove.creator?._id === user.id || taskToMove.creator === user.id;
+    const isAssignee = taskToMove.assignee && (taskToMove.assignee?._id === user.id || taskToMove.assignee === user.id);
 
     if (user.role === 'User' && !isCreator && !isAssignee) {
       alert('You are not authorized to update this task.');

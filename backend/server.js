@@ -25,6 +25,17 @@ app.use(cors({
 
 app.use(express.json());
 
+// Socket.io Setup
+const io = socketIo(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+  }
+});
+
+// Expose io instance to Express routes
+app.set('io', io);
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
@@ -36,45 +47,27 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'OK', message: 'Smart Task Manager Server is running.' });
 });
 
-// Socket.io Setup
-const io = socketIo(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
-
-// Store active socket connections map: userId -> socketId
-const activeSockets = new Map();
-
+// Socket connection handling
 io.on('connection', (socket) => {
   console.log(`New Socket Client Connected: ${socket.id}`);
 
-  // Register user
+  // Register user into a dedicated user room
   socket.on('register', (userId) => {
     if (userId) {
-      activeSockets.set(userId.toString(), socket.id);
-      console.log(`Socket user registered: User ${userId} connected on socket ${socket.id}`);
+      const room = `user:${userId.toString()}`;
+      socket.join(room);
+      console.log(`Socket user registered: User ${userId} joined room ${room} on socket ${socket.id}`);
     }
   });
 
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log(`Socket Client Disconnected: ${socket.id}`);
-    // Clean up from activeSockets map
-    for (const [userId, socketId] of activeSockets.entries()) {
-      if (socketId === socket.id) {
-        activeSockets.delete(userId);
-        console.log(`Socket user unregistered: User ${userId}`);
-        break;
-      }
-    }
   });
 });
 
-// Smart Reminder Background Scheduler
-// Checks every 10 seconds for testing responsiveness
-setInterval(async () => {
+// Smart Reminder Check Function
+const checkReminders = async () => {
   try {
     const now = new Date();
     // Find all unsent reminders that are due
@@ -82,6 +75,8 @@ setInterval(async () => {
       reminderTime: { $lte: now },
       isSent: false
     }).populate('task');
+
+    const processed = [];
 
     for (const reminder of pendingReminders) {
       if (!reminder.task) {
@@ -95,37 +90,71 @@ setInterval(async () => {
       await reminder.save();
 
       console.log(`[Smart Reminder Alert] Task "${reminder.task.title}" is due for User ${reminder.user}`);
+      processed.push(reminder);
 
-      // Dispatch real-time notification if user is online
-      const userSocketId = activeSockets.get(reminder.user.toString());
-      if (userSocketId) {
-        io.to(userSocketId).emit('reminder_notification', {
-          id: reminder._id,
-          task: {
-            id: reminder.task._id,
-            title: reminder.task.title,
-            description: reminder.task.description,
-            dueDate: reminder.task.dueDate,
-            priority: reminder.task.priority,
-            status: reminder.task.status
-          },
-          reminderTime: reminder.reminderTime,
-          channel: reminder.channel
-        });
-        console.log(`[Smart Reminder Alert] Successfully sent real-time socket alert to user ${reminder.user}`);
-      } else {
-        console.log(`[Smart Reminder Alert] User ${reminder.user} is offline. Notification queued.`);
-      }
+      // Dispatch real-time notification to user room
+      const userRoom = `user:${reminder.user.toString()}`;
+      io.to(userRoom).emit('reminder_notification', {
+        id: reminder._id,
+        task: {
+          id: reminder.task._id,
+          title: reminder.task.title,
+          description: reminder.task.description,
+          dueDate: reminder.task.dueDate,
+          priority: reminder.task.priority,
+          status: reminder.task.status
+        },
+        reminderTime: reminder.reminderTime,
+        channel: reminder.channel
+      });
+      console.log(`[Smart Reminder Alert] Real-time socket alert dispatched to room ${userRoom}`);
 
       // If channel is Email, simulate sending an email
       if (reminder.channel === 'Email') {
         console.log(`[SIMULATED EMAIL SENT] To user ID: ${reminder.user} for Task "${reminder.task.title}"`);
       }
     }
+    return processed;
   } catch (err) {
-    console.error('Error running reminder check interval:', err);
+    console.error('Error running reminder check:', err);
+    throw err;
   }
-}, 10000);
+};
+
+// Cron endpoint for Vercel Cron or external schedulers
+app.get('/api/cron/reminders', async (req, res) => {
+  // Enforce security check if running on Vercel
+  if (process.env.VERCEL) {
+    const hasCronHeader = req.headers['x-vercel-cron'] === '1';
+    const hasAuthHeader = req.headers['authorization'] === `Bearer ${process.env.CRON_SECRET}`;
+    if (!hasCronHeader && !hasAuthHeader) {
+      return res.status(401).json({ success: false, error: 'Unauthorized cron request' });
+    }
+  }
+
+  try {
+    const processedReminders = await checkReminders();
+    res.status(200).json({
+      success: true,
+      message: 'Reminder cron check completed successfully',
+      count: processedReminders.length,
+      processed: processedReminders.map(r => ({ id: r._id, task: r.task?.title }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Run background interval check ONLY when not running as a Serverless Function on Vercel
+if (!process.env.VERCEL) {
+  setInterval(async () => {
+    try {
+      await checkReminders();
+    } catch (err) {
+      console.error('Error running reminder check interval:', err);
+    }
+  }, 10000);
+}
 
 // Connect to Database and start server
 let mongoServer;
@@ -141,16 +170,21 @@ const connectDB = async () => {
     }
   }
 
-  // Fallback to in-memory database
-  try {
-    const { MongoMemoryServer } = require('mongodb-memory-server');
-    mongoServer = await MongoMemoryServer.create();
-    const uri = mongoServer.getUri();
-    await mongoose.connect(uri);
-    console.log(`Connected to fallback In-Memory MongoDB running at: ${uri}`);
-  } catch (err) {
-    console.error('Database connection failed completely. Memory server could not be created:', err);
-    process.exit(1);
+  // Fallback to in-memory database (only for non-serverless local runs)
+  if (!process.env.VERCEL) {
+    try {
+      const { MongoMemoryServer } = require('mongodb-memory-server');
+      mongoServer = await MongoMemoryServer.create();
+      const uri = mongoServer.getUri();
+      await mongoose.connect(uri);
+      console.log(`Connected to fallback In-Memory MongoDB running at: ${uri}`);
+    } catch (err) {
+      console.error('Database connection failed completely. Memory server could not be created:', err);
+      process.exit(1);
+    }
+  } else {
+    console.error('Error: MONGO_URI must be provided when running in a serverless environment (Vercel).');
+    throw new Error('Missing MONGO_URI environment variable');
   }
 };
 
@@ -163,19 +197,31 @@ const startServer = async () => {
   });
 };
 
-startServer().catch(err => {
-  console.error('Failed starting backend server:', err);
-});
-
-// Graceful Shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM signal received. Shutting down gracefully.');
-  server.close(async () => {
-    await mongoose.disconnect();
-    if (mongoServer) {
-      await mongoServer.stop();
-    }
-    console.log('Backend server closed.');
-    process.exit(0);
+// If running in local/persistent mode, start server; on Vercel, just initialize DB connection
+if (!process.env.VERCEL) {
+  startServer().catch(err => {
+    console.error('Failed starting backend server:', err);
   });
-});
+} else {
+  // Trigger connection and cache it for subsequent serverless requests
+  connectDB().catch(err => {
+    console.error('Failed to initialize database connection on serverless startup:', err);
+  });
+}
+
+// Graceful Shutdown (only applicable in persistent servers)
+if (!process.env.VERCEL) {
+  process.on('SIGTERM', async () => {
+    console.log('SIGTERM signal received. Shutting down gracefully.');
+    server.close(async () => {
+      await mongoose.disconnect();
+      if (mongoServer) {
+        await mongoServer.stop();
+      }
+      console.log('Backend server closed.');
+      process.exit(0);
+    });
+  });
+}
+
+module.exports = app;

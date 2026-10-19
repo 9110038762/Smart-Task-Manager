@@ -36,6 +36,7 @@ const Register = () => {
         setError(result.error || 'Failed to register account');
       }
     } catch (err) {
+      console.error('Registration error:', err);
       setError('A network error occurred. Please try again.');
     } finally {
       setLoading(false);

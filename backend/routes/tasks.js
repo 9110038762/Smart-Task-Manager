@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Task = require('../models/Task');
+const Reminder = require('../models/Reminder');
 const { protect, authorize } = require('../middleware/auth');
 
 // @desc    Get all tasks
@@ -47,6 +48,11 @@ router.post('/', protect, async (req, res) => {
     const populatedTask = await Task.findById(task._id)
       .populate('creator', 'name email role')
       .populate('assignee', 'name email role');
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('task_created', populatedTask);
+    }
 
     res.status(201).json({ success: true, data: populatedTask });
   } catch (err) {
@@ -108,28 +114,32 @@ router.put('/:id', protect, async (req, res) => {
         return res.status(400).json({ success: false, error: 'Regular users can only update task status' });
       }
       
-      // Update only status
       task.status = status;
       await task.save();
     } else {
-      // Manager/Admin can update anything
-      // Handle empty assignee
-      if (req.body.assignee === '') {
-        // If assignee is set to empty, remove assignee field
-        task.assignee = undefined;
-        await task.save();
-        delete req.body.assignee;
+      // Manager/Admin can update all fields
+      if (req.body.title !== undefined) task.title = req.body.title;
+      if (req.body.description !== undefined) task.description = req.body.description;
+      if (req.body.status !== undefined) task.status = req.body.status;
+      if (req.body.priority !== undefined) task.priority = req.body.priority;
+      if (req.body.dueDate !== undefined) task.dueDate = req.body.dueDate;
+      if (req.body.category !== undefined) task.category = req.body.category;
+
+      if ('assignee' in req.body) {
+        task.assignee = req.body.assignee ? req.body.assignee : undefined;
       }
-      
-      task = await Task.findByIdAndUpdate(req.params.id, req.body, {
-        new: true,
-        runValidators: true
-      });
+
+      await task.save();
     }
 
     const updatedTask = await Task.findById(task._id)
       .populate('creator', 'name email role')
       .populate('assignee', 'name email role');
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('task_updated', updatedTask);
+    }
 
     res.status(200).json({ success: true, data: updatedTask });
   } catch (err) {
@@ -149,6 +159,12 @@ router.delete('/:id', protect, authorize('Manager', 'Admin'), async (req, res) =
     }
 
     await task.deleteOne();
+    await Reminder.deleteMany({ task: req.params.id });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('task_deleted', { taskId: req.params.id });
+    }
 
     res.status(200).json({ success: true, data: {} });
   } catch (err) {

@@ -36,6 +36,15 @@ router.put('/users/:id/role', protect, authorize('Admin'), async (req, res) => {
     user.role = role;
     await user.save();
 
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('user_role_updated', {
+        userId: user._id.toString(),
+        role: user.role,
+        name: user.name
+      });
+    }
+
     res.status(200).json({
       success: true,
       data: {

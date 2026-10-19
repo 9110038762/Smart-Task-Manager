@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Bell, X, Calendar, AlertCircle } from 'lucide-react';
+import { Bell, X, Calendar } from 'lucide-react';
 
 const ReminderToast = () => {
   const { notifications, clearNotification } = useAuth();
@@ -16,13 +16,13 @@ const ReminderToast = () => {
               <Bell size={14} style={{ color: '#a78bfa' }} />
               <span>Smart Reminder</span>
             </div>
-            <button className="toast-close" onClick={() => clearNotification(notif.id)}>
+            <button className="toast-close" onClick={() => clearNotification(notif.id)} title="Dismiss">
               <X size={16} />
             </button>
           </div>
           
-          <div className="toast-title">{notif.task.title}</div>
-          {notif.task.description && (
+          <div className="toast-title">{notif.task?.title || 'Task Reminder'}</div>
+          {notif.task?.description && (
             <p style={{ fontSize: '0.8rem', color: '#94a3b8', margin: '0.2rem 0' }}>
               {notif.task.description}
             </p>
@@ -31,11 +31,13 @@ const ReminderToast = () => {
           <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem', alignItems: 'center' }}>
             <div className="task-date" style={{ fontSize: '0.75rem' }}>
               <Calendar size={12} />
-              <span>Due: {new Date(notif.task.dueDate).toLocaleDateString()}</span>
+              <span>Due: {notif.task?.dueDate ? new Date(notif.task.dueDate).toLocaleDateString() : 'N/A'}</span>
             </div>
-            <span className={`priority-badge ${notif.task.priority.toLowerCase()}`} style={{ fontSize: '0.65rem', padding: '0.05rem 0.35rem' }}>
-              {notif.task.priority}
-            </span>
+            {notif.task?.priority && (
+              <span className={`priority-badge ${notif.task.priority.toLowerCase()}`} style={{ fontSize: '0.65rem', padding: '0.05rem 0.35rem' }}>
+                {notif.task.priority}
+              </span>
+            )}
           </div>
         </div>
       ))}

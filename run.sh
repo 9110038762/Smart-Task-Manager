@@ -2,12 +2,22 @@
 
 # Smart Task Manager Orchestrator
 
+# Ensure we operate in the script's root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
+
+# Clean up any previously stuck processes on ports 5005 or 5173
+lsof -ti :5005 | xargs kill -9 2>/dev/null
+lsof -ti :5173 | xargs kill -9 2>/dev/null
+
 # Function to shut down both servers when script is closed
 cleanup() {
     echo ""
     echo "Stopping all services..."
     kill $BACKEND_PID 2>/dev/null
     kill $FRONTEND_PID 2>/dev/null
+    lsof -ti :5005 | xargs kill -9 2>/dev/null
+    lsof -ti :5173 | xargs kill -9 2>/dev/null
     exit 0
 }
 
@@ -20,10 +30,10 @@ echo "=================================================="
 
 # 1. Launch backend
 echo "👉 Booting Backend Server (Port 5005)..."
-cd backend
+cd "$SCRIPT_DIR/backend"
 npm start &
 BACKEND_PID=$!
-cd ..
+cd "$SCRIPT_DIR"
 
 # Delay to allow backend connection to database
 sleep 2.5
