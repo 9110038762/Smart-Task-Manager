@@ -3,8 +3,9 @@ import { io } from 'socket.io-client';
 
 const AuthContext = createContext();
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5005/api';
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5005';
+const rawApiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5005/api';
+const API_URL = rawApiUrl.endsWith('/api') ? rawApiUrl.replace(/\/+$/, '') : `${rawApiUrl.replace(/\/+$/, '')}/api`;
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || rawApiUrl.replace(/\/api\/?$/, '') || 'http://localhost:5005';
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
