@@ -25,6 +25,23 @@ app.use(cors({
 
 app.use(express.json());
 
+// On Vercel serverless, ensure database connection is established before routing requests
+let isConnected = false;
+if (process.env.VERCEL) {
+  app.use(async (req, res, next) => {
+    try {
+      await connectDB();
+      next();
+    } catch (err) {
+      console.error('Database connection error on serverless invocation:', err);
+      return res.status(500).json({
+        success: false,
+        error: 'Database connection failed: ' + (err.message || 'Please check your MONGO_URI configuration.')
+      });
+    }
+  });
+}
+
 // Socket.io Setup
 const io = socketIo(server, {
   cors: {
@@ -159,14 +176,22 @@ if (!process.env.VERCEL) {
 // Connect to Database and start server
 let mongoServer;
 const connectDB = async () => {
+  if (isConnected && mongoose.connection.readyState === 1) {
+    return;
+  }
+
   const dbUri = process.env.MONGO_URI;
   if (dbUri) {
     try {
-      await mongoose.connect(dbUri);
+      await mongoose.connect(dbUri, { serverSelectionTimeoutMS: 5000 });
+      isConnected = true;
       console.log('Successfully connected to MongoDB Database');
       return;
     } catch (err) {
-      console.error('Failed connecting to configured MONGO_URI. Trying memory database fallback...', err);
+      console.error('Failed connecting to configured MONGO_URI:', err.message);
+      if (process.env.VERCEL) {
+        throw err;
+      }
     }
   }
 
@@ -174,9 +199,12 @@ const connectDB = async () => {
   if (!process.env.VERCEL) {
     try {
       const { MongoMemoryServer } = require('mongodb-memory-server');
-      mongoServer = await MongoMemoryServer.create();
+      if (!mongoServer) {
+        mongoServer = await MongoMemoryServer.create();
+      }
       const uri = mongoServer.getUri();
       await mongoose.connect(uri);
+      isConnected = true;
       console.log(`Connected to fallback In-Memory MongoDB running at: ${uri}`);
     } catch (err) {
       console.error('Database connection failed completely. Memory server could not be created:', err);
@@ -184,7 +212,7 @@ const connectDB = async () => {
     }
   } else {
     console.error('Error: MONGO_URI must be provided when running in a serverless environment (Vercel).');
-    throw new Error('Missing MONGO_URI environment variable');
+    throw new Error('Missing MONGO_URI environment variable. Please set MONGO_URI in your Vercel Project Settings.');
   }
 };
 
